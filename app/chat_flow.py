@@ -8,6 +8,10 @@ from langchain_core.messages import HumanMessage
 
 from llm import LangchainIntakeClient
 
+
+# TODO: fixes
+# Saying is that correct yes multiple times. 
+
 SYSTEM_PROMPT = (
     "You are Angy, a professional and warm virtual assistant for medical intake. "
     "You greet the patient, collect their basic info, then guide them through intake questions. "
@@ -16,21 +20,22 @@ SYSTEM_PROMPT = (
 
 # I have had chest pain for 1 year whenever I run where I sweat and feel a throbbing sensation, my pain is a 5
 
-def _load_chest_pain_questions() -> dict:
+def _load_questionnaire(filename: str) -> dict:
     complaints_dir = Path(__file__).resolve().parent / "complaints"
-    chest_pain_file = complaints_dir / "chest_pain.json"
-    if not chest_pain_file.exists():
-        raise FileNotFoundError(f"Expected complaint file not found: {chest_pain_file}")
+    questionnaire_file = complaints_dir / filename
+    if not questionnaire_file.exists():
+        raise FileNotFoundError(f"Expected complaint file not found: {questionnaire_file}")
 
-    with chest_pain_file.open("r", encoding="utf-8") as handle:
+    with questionnaire_file.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 
     if not isinstance(data, dict) or "questions" not in data:
-        raise ValueError("Chest pain complaint file must contain a 'questions' list")
+        raise ValueError(f"Complaint file {filename} must contain a 'questions' list")
     return data
 
 
-CHEST_PAIN_QUESTIONS = _load_chest_pain_questions()
+CHEST_PAIN_QUESTIONS = _load_questionnaire("chest_pain.json")
+CV_RISK_QUESTIONS = _load_questionnaire("CV_risk.json")
 
 
 def get_answered_keys(history: Iterable[HumanMessage]) -> set[str]:
@@ -178,6 +183,31 @@ def is_confirmation(client: LangchainIntakeClient, reply: str) -> bool:
     response = client.ask(instruction, history=[], stream=False).strip().lower()
     return response.startswith("yes")
 
+def summarize_and_check_for_additions(client: LangchainIntakeClient) -> None:
+    """Summarize the conversation so far and ask the patient if they want to add anything."""
+    print("Angy: Let me summarize this real quick. You have been...\n")
+    context_text = "\n".join(
+        f"- {msg.content}" for msg in client.patient_messages()
+        if hasattr(msg, "content") and msg.content
+    )
+
+    instruction = (
+        "You are a medical intake assistant. Start by saying 'Let me summarize this real quick. You have been...'. "
+        "Then briefly summarize the key points of the conversation in 1–3 sentences. "
+        "End with 'Would you like to add anything?'\n\n"
+        f"Conversation:\n{context_text}"
+    )
+
+    reflection = client.ask(instruction, history=[], stream=False).strip()
+    print(f"Angy: {reflection}")
+    client.add_assistant_message(reflection)
+    reply = input("You: ").strip()
+    client.add_patient_message(reply)
+
+def introduce_next_section(section_label: str) -> None:
+    """Introduce the next section of the intake."""
+    print(f"Angy: Thank you. I’ll now ask a few questions about {section_label}.\n")
+
 
 def handle_chest_pain(client: LangchainIntakeClient):
     print("Angy: Thank you. I’ll ask a few more questions about the chest pain.\n")
@@ -197,7 +227,7 @@ def handle_chest_pain(client: LangchainIntakeClient):
             client.add_patient_message(patient_reply)
 
             if is_confirmation(client, patient_reply):
-                client.add_structured_patient_message(q["prompt"], inferred)
+                client.add_structured_patient_message(q["prompt"], inferred, add_raw=False)
                 answered_keys.add(q["key"])
                 print("Confirmed skipping")
                 continue
@@ -206,6 +236,36 @@ def handle_chest_pain(client: LangchainIntakeClient):
             # and then re-attempt to infer the answer...
             # don't do infinite loop, 3 retries max maybe
 
+
+        follow_up = q["prompt"]
+        print(f"Angy: {follow_up}")
+        client.add_assistant_message(follow_up)
+        answer = input("You: ").strip()
+        client.add_structured_patient_message(q["prompt"], answer)
+        answered_keys.add(q["key"])
+
+
+def handle_cv_risk(client: LangchainIntakeClient):
+    print("Angy: I’d also like to ask a few questions about cardiovascular risk factors.\n")
+
+    answered_keys = get_answered_keys(client.history())
+
+    for q in CV_RISK_QUESTIONS["questions"]:
+        if q["key"] in answered_keys:
+            continue
+
+        inferred = _infer_answer(client, q["prompt"], expected_type=q.get("answer_type"), stream=True)
+        if inferred:
+            confirmation = f"It sounds like {inferred}. Is that correct?"
+            print(f"Angy: {confirmation}")
+            client.add_assistant_message(confirmation)
+            patient_reply = input("You: ").strip()
+            client.add_patient_message(patient_reply)
+
+            if is_confirmation(client, patient_reply):
+                client.add_structured_patient_message(q["prompt"], inferred, add_raw=False)
+                answered_keys.add(q["key"])
+                continue
 
         follow_up = q["prompt"]
         print(f"Angy: {follow_up}")
@@ -228,8 +288,13 @@ def intake_flow():
 
     basic_info = ask_basic_info(client)
 
-    if "chest pain" in basic_info["chief_complaint"].lower():
+    complaint_lower = basic_info["chief_complaint"].lower()
+
+    if "chest pain" in complaint_lower:
         handle_chest_pain(client)
+        summarize_and_check_for_additions(client)
+        introduce_next_section("risk factors")
+        handle_cv_risk(client)
 
     chest_pain_answers = {
         q["key"]: next(
@@ -243,6 +308,18 @@ def intake_flow():
         for q in CHEST_PAIN_QUESTIONS["questions"]
     }
 
+    cv_risk_answers = {
+        q["key"]: next(
+            (
+                msg.content.replace(q["prompt"], "").strip()
+                for msg in client.patient_messages()
+                if msg.content.startswith(q["prompt"])
+            ),
+            None
+        )
+        for q in CV_RISK_QUESTIONS["questions"]
+    }
+
     print("\n== Intake Complete ==")
     print("Angy: Thank you. I’ve noted everything and will pass it on to your clinical team.")
 
@@ -250,7 +327,8 @@ def intake_flow():
         "name": basic_info["name"],
         "dob": basic_info["dob"],
         "chief_complaint": basic_info["chief_complaint"],
-        "chest_pain_answers": chest_pain_answers
+        "chest_pain_answers": chest_pain_answers,
+        "cv_risk_answers": cv_risk_answers,
     }
 
 

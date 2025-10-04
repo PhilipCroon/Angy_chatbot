@@ -1,0 +1,50 @@
+{
+  "title": "Cardiovascular Risk Factors",
+  "questions": [
+    {
+      "key": "smoking",
+      "prompt": "Do you currently smoke, or have you smoked in the past?",
+      "answer_type": "yes/no and pack-years if possible"
+    },
+    {
+      "key": "hypertension",
+      "prompt": "Have you ever been told you have high blood pressure?",
+      "answer_type": "yes/no or blood pressure readings"
+    },
+    {
+      "key": "cholesterol",
+      "prompt": "Do you have high cholesterol or take medication for it?",
+      "answer_type": "yes/no or medications"
+    },
+    {
+      "key": "diabetes",
+      "prompt": "Have you been diagnosed with diabetes or prediabetes?",
+      "answer_type": "yes/no and type if known"
+    },
+    {
+      "key": "family_history",
+      "prompt": "Is there a family history of heart disease, like in your parents or siblings?",
+      "answer_type": "yes/no and relationship if applicable"
+    },
+    {
+      "key": "sedentary_lifestyle",
+      "prompt": "Do you get regular physical activity or exercise?",
+      "answer_type": "yes/no or description of activity level"
+    },
+    {
+      "key": "diet",
+      "prompt": "Would you say your diet is generally healthy or do you often eat processed or fatty foods?",
+      "answer_type": "brief description"
+    },
+    {
+      "key": "alcohol",
+      "prompt": "Do you drink alcohol, and if so, how much per week?",
+      "answer_type": "yes/no and quantity"
+    },
+    {
+      "key": "stress",
+      "prompt": "Would you describe your stress levels as high, moderate, or low?",
+      "answer_type": "qualitative (high/moderate/low)"
+    }
+  ]
+}

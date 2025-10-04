@@ -9,6 +9,9 @@ from langchain_community.chat_models import ChatOllama
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain.memory import ConversationBufferMemory
+import warnings
+from langchain_core._api import LangChainDeprecationWarning
+warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
 
 try:  # Optional embedding support
     from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -64,15 +67,15 @@ class LangchainIntakeClient:
         self._memory.chat_memory.add_ai_message(cleaned)
         self._store_embedding(role="assistant", text=cleaned)
 
-    def add_structured_patient_message(self, prompt: str, answer: str) -> None:
+    def add_structured_patient_message(self, prompt: str, answer: str, *, add_raw: bool = True) -> None:
         answer_clean = answer.strip()
         if not answer_clean:
             return
-        self.add_patient_message(answer_clean)  # raw answer for retrieval
+        if add_raw:
+            self.add_patient_message(answer_clean)  # raw answer for retrieval
         structured = f"{prompt} {answer_clean}".strip()
-        if structured != answer_clean:
-            self._memory.chat_memory.add_user_message(structured)
-            self._store_embedding(role="patient_structured", text=structured)
+        self._memory.chat_memory.add_user_message(structured)
+        self._store_embedding(role="patient_structured", text=structured)
 
     def history(self) -> List[BaseMessage]:
         return list(self._memory.chat_memory.messages)
