@@ -14,6 +14,7 @@ SYSTEM_PROMPT = (
     "You avoid making diagnoses and never mention being AI."
 )
 
+# I have had chest pain for 1 year whenever I run where I sweat and feel a throbbing sensation, my pain is a 5
 
 def _load_chest_pain_questions() -> dict:
     complaints_dir = Path(__file__).resolve().parent / "complaints"
@@ -112,6 +113,7 @@ POSITIVE_CONFIRMATIONS = {
 def _infer_answer(
     client: LangchainIntakeClient,
     prompt: str,
+    expected_type=None,
     *,
     stream: bool = False,
 ) -> Optional[str]:
@@ -128,9 +130,11 @@ def _infer_answer(
     )
 
     # context_text = "\n".join(f"- {entry['text']}" for entry in client.history)
+ 
     instruction = (
         "You are a clinical intake assistant extracting answers from previous patient statements.\n"
         f"Question: {prompt}\n"
+        f"Expected answer format: {expected_type or 'short clinical answer'}\n"
         "Patient statements:\n"
         f"{context_text}\n"
         "If the question has already been answered, reply exactly with 'ANSWER: <short answer>'.\n"
@@ -184,7 +188,7 @@ def handle_chest_pain(client: LangchainIntakeClient):
         if q["key"] in answered_keys:
             continue
 
-        inferred = _infer_answer(client, q["prompt"], stream=True)
+        inferred = _infer_answer(client, q["prompt"], expected_type=q.get("answer_type"), stream=True)
         if inferred:
             confirmation = f"It sounds like {inferred}. Is that correct?"
             print(f"Angy: {confirmation}")
@@ -197,6 +201,10 @@ def handle_chest_pain(client: LangchainIntakeClient):
                 answered_keys.add(q["key"])
                 print("Confirmed skipping")
                 continue
+            
+            # If said no, see if answered in response or if need to re-ask
+            # and then re-attempt to infer the answer...
+            # don't do infinite loop, 3 retries max maybe
 
 
         follow_up = q["prompt"]
