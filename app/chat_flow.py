@@ -1,22 +1,17 @@
-from pathlib import Path
-from typing import Optional
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
-from langchain_community.chat_models import ChatOllama
-from langchain.memory import ConversationBufferMemory
 import json
+import re
+from pathlib import Path
+from typing import Iterable, Optional
 
+from langchain_core.messages import HumanMessage
 
-# === Setup LangChain components ===
+from llm import LangchainIntakeClient
+
 SYSTEM_PROMPT = (
     "You are Angy, a professional and warm virtual assistant for medical intake. "
     "You greet the patient, collect their basic info, then guide them through intake questions. "
     "You avoid making diagnoses and never mention being AI."
 )
-
-llm = ChatOllama(model="phi3", temperature=0.2)
-memory = ConversationBufferMemory(return_messages=True)
 
 
 def _load_chest_pain_questions() -> dict:
@@ -35,28 +30,8 @@ def _load_chest_pain_questions() -> dict:
 
 CHEST_PAIN_QUESTIONS = _load_chest_pain_questions()
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", "{input}")
-])
 
-
-def ask_question(question, history):
-    """Query LLM with structured message history and the current question."""
-    # Build messages: system message, previous conversation history, then the current human question
-    messages = [SystemMessage(content=SYSTEM_PROMPT)]
-    # history is expected to be a list of LangChain Message objects (HumanMessage / AIMessage)
-    if history:
-        messages.extend(list(history))
-    messages.append(HumanMessage(content=question))
-
-    # Invoke the model with the composed messages
-    result = llm.invoke(messages)
-    return result
-
-
-
-def get_answered_keys(history: list[str]) -> set[str]:
+def get_answered_keys(history: Iterable[HumanMessage]) -> set[str]:
     """Extract question keys already answered."""
     answered = set()
     for msg in history:
@@ -65,6 +40,16 @@ def get_answered_keys(history: list[str]) -> set[str]:
                 if q["prompt"] in msg.content:
                     answered.add(q["key"])
     return answered
+
+
+def _strip_question_prefix(text: str) -> str:
+    for q in CHEST_PAIN_QUESTIONS["questions"]:
+        prompt = q["prompt"].strip()
+        if text.startswith(prompt):
+            remainder = text[len(prompt):].strip()
+            if remainder:
+                return remainder
+    return text.strip()
 
 
 # Helper sanitizer for inferred answers
@@ -94,64 +79,132 @@ def _sanitize_inferred(text: str) -> Optional[str]:
     return cleaned
 
 
+POSITIVE_CONFIRMATIONS = {
+    "yes",
+    "y",
+    "yeah",
+    "correct",
+    "that's right",
+    "thats right",
+    "right",
+    "yep",
+    "affirmative",
+    "sure",
+}
+
+
+def _infer_answer(
+    client: LangchainIntakeClient,
+    prompt: str,
+    *,
+    stream: bool = False,
+) -> Optional[str]:
+    context_entries = client.similar_messages(prompt, top_k=5, min_score=0.5)
+    print("\n[DEBUG] Retrieval context for prompt:")
+    for entry in context_entries:
+        print(f"  - ({entry['role']}) {entry['text']}")
+
+    if not context_entries:
+        return None
+
+    context_text = "\n".join(f"- {entry['text']}" for entry in context_entries)
+    instruction = (
+        "You are a clinical intake assistant extracting answers from previous patient statements.\n"
+        f"Question: {prompt}\n"
+        "Patient statements:\n"
+        f"{context_text}\n"
+        "If the question has already been answered, reply exactly with 'ANSWER: <short answer>'.\n"
+        "If it is not answered, reply exactly with 'UNKNOWN'."
+    )
+
+    print("[DEBUG] Instruction to model:")
+    print(instruction)
+    response = client.ask(instruction, history=[], stream=stream).strip()
+    print("[DEBUG] Model response:")
+    print(response)
+    lowered = response.lower()
+    if lowered.startswith("answer:"):
+        candidate = response.split(":", 1)[1].strip()
+        return _sanitize_inferred(candidate) or candidate
+
+    return None
+
+
+def ask_basic_info(client: LangchainIntakeClient) -> dict:
+    name = input("Angy: Hello, welcome! May I have your full name?\nYou: ")
+    client.add_patient_message(name)
+
+    dob = input("Angy: Thank you! Can you confirm your date of birth?\nYou: ")
+    client.add_patient_message(dob)
+
+    complaint = input("Angy: What brings you in today?\nYou: ")
+    client.add_patient_message(complaint)
+
+    return {"name": name, "dob": dob, "chief_complaint": complaint}
+
+
+def handle_chest_pain(client: LangchainIntakeClient):
+    print("Angy: Thank you. I’ll ask a few more questions about the chest pain.\n")
+
+    history = client.history()
+    answered_keys = get_answered_keys(history)
+
+    for q in CHEST_PAIN_QUESTIONS["questions"]:
+        if q["key"] in answered_keys:
+            continue
+
+        inferred = _infer_answer(client, q["prompt"], stream=True)
+        if inferred:
+            confirmation = f"It sounds like {inferred}. Is that correct?"
+            print(f"Angy: {confirmation}")
+            client.add_assistant_message(confirmation)
+            patient_reply = input("You: ").strip()
+            client.add_patient_message(patient_reply)
+
+            normalized_reply = patient_reply.lower().strip()
+            if normalized_reply in POSITIVE_CONFIRMATIONS or normalized_reply.startswith("yes"):
+                client.add_structured_patient_message(q["prompt"], inferred)
+                answered_keys.add(q["key"])
+                continue
+
+        follow_up = q["prompt"]
+        print(f"Angy: {follow_up}")
+        client.add_assistant_message(follow_up)
+        answer = input("You: ").strip()
+        client.add_structured_patient_message(q["prompt"], answer)
+        answered_keys.add(q["key"])
+
+
 def intake_flow():
     print("== Angy ChatBot (Chest Pain Intake) ==\n")
 
-    # --- Name ---
-    name = input("Angy: Hello, welcome! May I have your full name?\nYou: ")
-    memory.chat_memory.add_user_message(name)
+    client = LangchainIntakeClient(system_prompt=SYSTEM_PROMPT, model="phi3", temperature=0.2)
 
-    # --- Date of Birth ---
-    dob = input("Angy: Thank you! Can you confirm your date of birth?\nYou: ")
-    memory.chat_memory.add_user_message(dob)
+    basic_info = ask_basic_info(client)
 
-    # --- Chief Complaint ---
-    complaint = input("Angy: What brings you in today?\nYou: ")
-    memory.chat_memory.add_user_message(complaint)
+    if "chest pain" in basic_info["chief_complaint"].lower():
+        handle_chest_pain(client)
 
-    if "chest pain" in complaint.lower():
-        print("Angy: Thank you. I’ll ask a few more questions about the chest pain.\n")
-
-        # Use the stored chat memory messages as the conversation history
-        history = list(memory.chat_memory.messages)
-        # Do NOT clear memory here — keep the conversation for LLM context
-        answered_keys = get_answered_keys(history)
-
-        for q in CHEST_PAIN_QUESTIONS["questions"]:
-            if q["key"] not in answered_keys:
-                # Ask the LLM to infer an answer from the existing history
-                result = ask_question(q["prompt"], history)
-                raw = getattr(result, "content", str(result)).strip()
-                inferred = _sanitize_inferred(raw)
-                if inferred:
-                    # Show what was inferred and store it as if the patient answered
-                    print(f"Angy (inferred): {inferred}")
-                    memory.chat_memory.add_user_message(f"{q['prompt']} {inferred}")
-                    # also append to our local history so subsequent inferences see it
-                    history.append(HumanMessage(content=f"{q['prompt']} {inferred}"))
-                else:
-                    # Fall back to asking the user directly
-                    answer = input(f"Angy: {q['prompt']}\nYou: ")
-                    memory.chat_memory.add_user_message(f"{q['prompt']} {answer}")
-                    history.append(HumanMessage(content=f"{q['prompt']} {answer}"))
+    chest_pain_answers = {
+        q["key"]: next(
+            (
+                msg.content.replace(q["prompt"], "").strip()
+                for msg in client.patient_messages()
+                if msg.content.startswith(q["prompt"])
+            ),
+            None
+        )
+        for q in CHEST_PAIN_QUESTIONS["questions"]
+    }
 
     print("\n== Intake Complete ==")
     print("Angy: Thank you. I’ve noted everything and will pass it on to your clinical team.")
 
-    # Optional: return structured output
     return {
-        "name": name,
-        "dob": dob,
-        "chief_complaint": complaint,
-        "chest_pain_answers": {
-            q["key"]: next(
-                (msg.content.replace(q["prompt"], "").strip()
-                 for msg in memory.chat_memory.messages
-                 if isinstance(msg, HumanMessage) and msg.content.startswith(q["prompt"])),
-                None
-            )
-            for q in CHEST_PAIN_QUESTIONS["questions"]
-        }
+        "name": basic_info["name"],
+        "dob": basic_info["dob"],
+        "chief_complaint": basic_info["chief_complaint"],
+        "chest_pain_answers": chest_pain_answers
     }
 
 

@@ -1,68 +1,113 @@
-"""LangChain-backed clients and prompt helpers for the Angy chatbot."""
+"""LangChain client wrapper used by the Angy intake chatbot."""
 
 from __future__ import annotations
 
-import os
-from typing import Any, List, Optional, Tuple, TYPE_CHECKING
+import math
+from typing import Dict, Iterable, List, Optional, Tuple
 
-try:
-    from langchain_community.chat_models import ChatOllama
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-    from langchain_core.prompts import ChatPromptTemplate
-except ImportError:  # pragma: no cover - optional dependency
-    ChatOllama = None  # type: ignore
-    AIMessage = HumanMessage = SystemMessage = None  # type: ignore
-    ChatPromptTemplate = None  # type: ignore
+from langchain_community.chat_models import ChatOllama
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain.memory import ConversationBufferMemory
 
-if TYPE_CHECKING:  # pragma: no cover - only for type hints
-    from Angy_chatbot.app.chat_flow import IntakeSession
+try:  # Optional embedding support
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+except ImportError:  # pragma: no cover - embeddings optional
+    HuggingFaceEmbeddings = None  # type: ignore
 
 
-class LangChainChatLLM:
-    """LangChain-powered wrapper around a locally hosted Ollama chat model."""
+class LangchainIntakeClient:
+    """Small helper around LangChain primitives with chat memory and embeddings."""
 
     def __init__(
         self,
         *,
         system_prompt: str,
-        model: Optional[str] = None,
+        model: str = "phi3",
         temperature: float = 0.2,
+        embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
     ) -> None:
-        if ChatOllama is None or HumanMessage is None or SystemMessage is None:
-            raise RuntimeError("langchain package is not installed")
+        self._system_prompt = system_prompt
+        self._llm = ChatOllama(model=model, temperature=temperature)
+        self._memory = ConversationBufferMemory(return_messages=True)
+        self._embeddings: List[Dict[str, object]] = []
 
-        selected_model = model or os.getenv("ANGY_OLLAMA_MODEL", "llama3")
-        self._system_message = SystemMessage(content=system_prompt)
-        self._llm = ChatOllama(model=selected_model, temperature=temperature)
+        if HuggingFaceEmbeddings is not None:
+            try:
+                self._embedder = HuggingFaceEmbeddings(model_name=embedding_model)
+            except Exception:  # pragma: no cover
+                self._embedder = None
+        else:
+            self._embedder = None
 
-    # Public API -----------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Memory helpers
+    # ------------------------------------------------------------------
+    def add_patient_message(self, text: str) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        self._memory.chat_memory.add_user_message(cleaned)
+        self._store_embedding(role="patient", text=cleaned)
 
-    def generate(self, instruction: str, session: "IntakeSession") -> str:
-        messages = self._build_history(session)
-        messages.append(HumanMessage(content=instruction))
-        return self._invoke(messages)
+    def add_assistant_message(self, text: str) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        self._memory.chat_memory.add_ai_message(cleaned)
+        self._store_embedding(role="assistant", text=cleaned)
 
-    def invoke_messages(
+    def add_structured_patient_message(self, prompt: str, answer: str) -> None:
+        answer_clean = answer.strip()
+        if not answer_clean:
+            return
+        self.add_patient_message(answer_clean)  # raw answer for retrieval
+        structured = f"{prompt} {answer_clean}".strip()
+        if structured != answer_clean:
+            self._memory.chat_memory.add_user_message(structured)
+            self._store_embedding(role="patient_structured", text=structured)
+
+    def history(self) -> List[BaseMessage]:
+        return list(self._memory.chat_memory.messages)
+
+    def patient_messages(self) -> List[HumanMessage]:
+        return [
+            msg
+            for msg in self._memory.chat_memory.messages
+            if isinstance(msg, HumanMessage)
+        ]
+
+    # ------------------------------------------------------------------
+    # LLM invocation
+    # ------------------------------------------------------------------
+    def ask(
         self,
-        session: "IntakeSession",
-        new_messages: List[Any],
+        prompt: str,
+        history: Optional[Iterable[BaseMessage]] = None,
+        *,
+        stream: bool = False,
     ) -> str:
-        messages = self._build_history(session)
-        messages.extend(new_messages)
-        return self._invoke(messages)
+        messages: List[BaseMessage] = [SystemMessage(content=self._system_prompt)]
+        if history is None:
+            messages.extend(self.history())
+        else:
+            messages.extend(list(history))
+        messages.append(HumanMessage(content=prompt))
 
-    # Internal helpers -----------------------------------------------------
+        if stream:
+            fragments: List[str] = []
+            for chunk in self._llm.stream(messages):
+                piece = getattr(chunk, "content", "")
+                if isinstance(piece, list):
+                    piece = "".join(
+                        part.get("text", "") for part in piece if isinstance(part, dict)
+                    )
+                if piece:
+                    print(piece, end="|", flush=True)
+                    fragments.append(piece)
+            if fragments:
+                print()
+            return "".join(fragments).strip()
 
-    def _build_history(self, session: "IntakeSession") -> List[Any]:
-        messages: List[Any] = [self._system_message]
-        for turn in session.conversation:
-            if turn.speaker.lower() == "angy":
-                messages.append(AIMessage(content=turn.text))
-            else:
-                messages.append(HumanMessage(content=turn.text))
-        return messages
-
-    def _invoke(self, messages: List[Any]) -> str:
         response = self._llm.invoke(messages)
         content = getattr(response, "content", None)
         if isinstance(content, list):
@@ -72,139 +117,62 @@ class LangChainChatLLM:
             content = str(response)
         return content.strip()
 
-
-class LangChainFlowPrompter:
-    """LangChain templates for higher-level conversation steps."""
-
-    def __init__(self, llm: LangChainChatLLM) -> None:
-        if ChatPromptTemplate is None:
-            raise RuntimeError("LangChain prompts unavailable")
-        self._llm = llm
-
-        self._intro_ask_template = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "human",
-                    "Introduce yourself as Angy, the virtual intake assistant. "
-                    "Briefly explain your role and end by asking exactly: "
-                    "'Could you please tell me your full name?'"
-                )
-            ]
-        )
-        self._intro_ack_template = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "human",
-                    "Greet the patient by name ({patient_name}) as Angy and let "
-                    "them know you already have their name on file. Invite them "
-                    "to continue without asking any further questions in this turn."
-                )
-            ]
-        )
-
-        self._complaint_template = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "human",
-                    "Thank the patient by name ({patient_name}) for sharing their "
-                    "details. Ask exactly this question without additional context: "
-                    "'Can you explain in your own words why you are referred to us?'"
-                )
-            ]
-        )
-
-        self._checklist_template = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "human",
-                    "You are Angy, a warm and concise medical intake assistant. "
-                    "Briefly acknowledge the patient's last statement in second person "
-                    "(no more than 12 words) and then ask the following question "
-                    "verbatim, ending with a question mark: "
-                    "{question_prompt}. Patient name: {patient_name}. "
-                    "Last patient statement: {last_statement}."
-                )
-            ]
-        )
-
-        self._summary_template = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "human",
-                    "Provide a single concise recap sentence addressing the patient as "
-                    "{patient_name}. Summarize the following key details already "
-                    "collected: {fragments}. Keep it under 40 words."
-                )
-            ]
-        )
-
-        self._slug_router_template = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "human",
-                    "You will be given a patient's statement and a list of available "
-                    "intake checklists. Respond ONLY with the slug that best matches "
-                    "the patient's needs or NONE if nothing fits.\n\n"
-                    "Patient statement: {statement}\n"
-                    "Available checklists:\n{catalog}\n"
-                )
-            ]
-        )
-
-    # Prompt helpers ------------------------------------------------------
-
-    def intro_prompt(self, session: "IntakeSession", needs_name: bool) -> str:
-        if needs_name:
-            messages = self._intro_ask_template.format_messages()
-        else:
-            patient_name = session.patient_name or "there"
-            messages = self._intro_ack_template.format_messages(
-                patient_name=patient_name
-            )
-        return self._llm.invoke_messages(session, messages)
-
-    def complaint_prompt(self, session: "IntakeSession") -> str:
-        patient_name = session.patient_name or "there"
-        messages = self._complaint_template.format_messages(patient_name=patient_name)
-        return self._llm.invoke_messages(session, messages)
-
-    def classify_slug(self, session: "IntakeSession", statement: str, catalog: List[str]) -> Optional[str]:
-        catalog_text = "\n".join(catalog)
-        messages = self._slug_router_template.format_messages(
-            statement=statement,
-            catalog=catalog_text,
-        )
-        response = self._llm.invoke_messages(session, messages)
-        candidate = response.strip().splitlines()[0].strip().lower()
-        candidate = candidate.strip("`""' ")
-        candidate = candidate.split()[0] if candidate else ""
-        if candidate == "none":
+    # ------------------------------------------------------------------
+    # Embedding helpers
+    # ------------------------------------------------------------------
+    def embed_query(self, text: str) -> Optional[List[float]]:
+        if self._embedder is None:
             return None
-        return candidate
+        try:
+            return self._embedder.embed_query(text)
+        except Exception:  # pragma: no cover
+            return None
 
-    def checklist_prompt(
+    def vector_store(self) -> List[Dict[str, object]]:
+        return list(self._embeddings)
+
+    def similar_messages(
         self,
-        session: "IntakeSession",
-        question_prompt: str,
-        last_statement: Optional[str],
-    ) -> str:
-        patient_name = session.patient_name or "there"
-        messages = self._checklist_template.format_messages(
-            patient_name=patient_name,
-            question_prompt=question_prompt,
-            last_statement=last_statement or "",
-        )
-        return self._llm.invoke_messages(session, messages)
+        prompt: str,
+        *,
+        top_k: int = 3,
+        min_score: float = 0.5,
+    ) -> List[Dict[str, object]]:
+        query_vec = self.embed_query(prompt)
+        if not query_vec:
+            return []
 
-    def checklist_summary(
-        self,
-        session: "IntakeSession",
-        fragments: str,
-    ) -> str:
-        patient_name = session.patient_name or "there"
-        messages = self._summary_template.format_messages(
-            patient_name=patient_name,
-            fragments=fragments,
-        )
-        return self._llm.invoke_messages(session, messages)
+        scored: List[Tuple[float, Dict[str, object]]] = []
+        for entry in self._embeddings:
+            vector = entry.get("vector")
+            if not vector:
+                continue
+            score = _cosine_similarity(query_vec, vector)
+            if score >= min_score:
+                scored.append((score, entry))
 
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [entry for _, entry in scored[:top_k]]
+
+    def _store_embedding(self, *, role: str, text: str) -> None:
+        if not text:
+            return
+        if self._embedder is None:
+            self._embeddings.append({"role": role, "text": text, "vector": None})
+            return
+        try:
+            vector = self._embedder.embed_query(text)
+        except Exception:  # pragma: no cover
+            vector = None
+        self._embeddings.append({"role": role, "text": text, "vector": vector})
+
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
