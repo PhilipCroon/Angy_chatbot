@@ -1,0 +1,36 @@
+# Angy Chatbot with FHIR Integration - Dependencies
+
+# Core Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.8.2
+
+# HTTP Client
+requests==2.31.0
+
+# LangChain Stack
+langchain==0.1.0
+langchain-openai==0.0.2
+langchain-core==0.1.8
+langchain-community==0.0.10
+
+# OpenAI
+openai==1.6.1
+
+# PhenoML for agent interaction
+phenoml==0.0.5
+
+# HuggingFace for embeddings
+sentence-transformers==2.2.2
+
+# Gradio for web UI
+gradio==4.8.0
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Optional: FHIR libraries
+# fhir.resources==7.0.2
+
+# Utilities
+python-multipart==0.0.6
