@@ -1,14 +1,13 @@
 {
-    "title": "Chest Pain Intake",
-    "questions": [
-        {"key": "onset", "prompt": "When did the chest pain start?"},
-        {"key": "character", "prompt": "Can you describe what the chest pain feels like?"},
-        {"key": "severity", "prompt": "On a scale from 0 to 10, how severe is the chest pain right now?"},
-        {"key": "associated_symptoms", "prompt": "Have you noticed any other symptoms with the chest pain, like shortness of breath, sweating, or nausea?"},
-        {"key": "triggers", "prompt": "Have you noticed anything that triggers or relieves the chest pain?"},
-        {"key": "radiation", "prompt": "Does the pain radiate to your arm, jaw, back, or anywhere else?"},
-        {"key": "exertion", "prompt": "Is the pain related to exercise or physical activity?"},
-        {"key": "relief", "prompt": "Does the pain improve when you rest?"}
-    ]
+  "title": "Chest Pain Intake",
+  "questions": [
+    {"key": "onset", "prompt": "When did the chest pain start?", "answer_type": "time or duration"},
+    {"key": "character", "prompt": "Can you describe what the chest pain feels like?", "answer_type": "pain description (e.g., dull, sharp, stabbing)"},
+    {"key": "severity", "prompt": "On a scale from 0 to 10, how severe is the chest when you have it?", "answer_type": "numeric scale 0–10"},
+    {"key": "associated_symptoms", "prompt": "Have you noticed any other symptoms with the chest pain, like shortness of breath, sweating, or nausea?", "answer_type": "list of symptoms"},
+    {"key": "triggers", "prompt": "Have you noticed anything that triggers or relieves the chest pain?", "answer_type": "triggers or relieving factors"},
+    {"key": "radiation", "prompt": "Does the pain radiate to your arm, jaw, back, or anywhere else?", "answer_type": "yes/no or radiation sites"},
+    {"key": "exertion", "prompt": "Is the pain related to exercise or physical activity?", "answer_type": "yes/no or short explanation"},
+    {"key": "relief", "prompt": "Does the pain improve when you rest?", "answer_type": "yes/no or short explanation"}
+  ]
 }
-
