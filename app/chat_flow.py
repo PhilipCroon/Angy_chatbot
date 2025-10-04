@@ -1,3 +1,4 @@
+from langchain_core.chat_history import InMemoryChatMessageHistory
 import json
 import re
 from pathlib import Path
@@ -79,6 +80,21 @@ def _sanitize_inferred(text: str) -> Optional[str]:
     return cleaned
 
 
+session_store = {}
+
+def get_by_session_id(session_id: str) -> InMemoryChatMessageHistory:
+    if session_id not in session_store:
+        session_store[session_id] = InMemoryChatMessageHistory()
+    return session_store[session_id]
+
+def format_history(messages):
+    result = []
+    for m in messages:
+        role = m.type if hasattr(m, "type") else m.__class__.__name__.replace("Message", "").lower()
+        result.append(f"{role.title()}: {m.content}")
+    return "\n".join(result)
+
+
 POSITIVE_CONFIRMATIONS = {
     "yes",
     "y",
@@ -104,10 +120,14 @@ def _infer_answer(
     for entry in context_entries:
         print(f"  - ({entry['role']}) {entry['text']}")
 
-    if not context_entries:
-        return None
+    # if not context_entries:
+    #     return None
+    context_text = "\n".join(
+        f"- {msg.content}" for msg in client.history()
+        if hasattr(msg, "content") and msg.content
+    )
 
-    context_text = "\n".join(f"- {entry['text']}" for entry in context_entries)
+    # context_text = "\n".join(f"- {entry['text']}" for entry in client.history)
     instruction = (
         "You are a clinical intake assistant extracting answers from previous patient statements.\n"
         f"Question: {prompt}\n"
@@ -143,11 +163,22 @@ def ask_basic_info(client: LangchainIntakeClient) -> dict:
     return {"name": name, "dob": dob, "chief_complaint": complaint}
 
 
+def is_confirmation(client: LangchainIntakeClient, reply: str) -> bool:
+    """Ask the LLM if the reply confirms the suggested answer."""
+    instruction = (
+        "You are a clinical intake assistant. "
+        "Given a patient reply, determine if it is confirming an answer. "
+        "Reply strictly with 'YES' if it confirms, or 'NO' otherwise.\n\n"
+        f"Patient reply: {reply}"
+    )
+    response = client.ask(instruction, history=[], stream=False).strip().lower()
+    return response.startswith("yes")
+
+
 def handle_chest_pain(client: LangchainIntakeClient):
     print("Angy: Thank you. I’ll ask a few more questions about the chest pain.\n")
 
-    history = client.history()
-    answered_keys = get_answered_keys(history)
+    answered_keys = get_answered_keys(client.history())
 
     for q in CHEST_PAIN_QUESTIONS["questions"]:
         if q["key"] in answered_keys:
@@ -161,11 +192,12 @@ def handle_chest_pain(client: LangchainIntakeClient):
             patient_reply = input("You: ").strip()
             client.add_patient_message(patient_reply)
 
-            normalized_reply = patient_reply.lower().strip()
-            if normalized_reply in POSITIVE_CONFIRMATIONS or normalized_reply.startswith("yes"):
+            if is_confirmation(client, patient_reply):
                 client.add_structured_patient_message(q["prompt"], inferred)
                 answered_keys.add(q["key"])
+                print("Confirmed skipping")
                 continue
+
 
         follow_up = q["prompt"]
         print(f"Angy: {follow_up}")
@@ -178,7 +210,13 @@ def handle_chest_pain(client: LangchainIntakeClient):
 def intake_flow():
     print("== Angy ChatBot (Chest Pain Intake) ==\n")
 
-    client = LangchainIntakeClient(system_prompt=SYSTEM_PROMPT, model="phi3", temperature=0.2)
+    # client = LangchainIntakeClient(system_prompt=SYSTEM_PROMPT, model="phi3", temperature=0.2)
+    client = LangchainIntakeClient(
+    system_prompt="You are a helpful assistant.",
+    model="gpt-4o-mini",
+    provider="openai",
+    openai_api_key="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",
+)
 
     basic_info = ask_basic_info(client)
 
