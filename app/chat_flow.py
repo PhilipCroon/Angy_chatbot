@@ -1,5 +1,6 @@
 from langchain_core.chat_history import InMemoryChatMessageHistory
 import json
+import os
 import re
 from pathlib import Path
 from typing import Iterable, Optional
@@ -8,6 +9,7 @@ from langchain_core.messages import HumanMessage
 
 from llm import LangchainIntakeClient
 
+from app_chest_pain import call_lang2fhir_create, save_to_medplum
 
 # TODO: fixes
 # Saying is that correct yes multiple times. 
@@ -292,12 +294,14 @@ def intake_flow():
     print("== Angy ChatBot (Chest Pain Intake) ==\n")
 
     # client = LangchainIntakeClient(system_prompt=SYSTEM_PROMPT, model="phi3", temperature=0.2)
+    provider = (os.getenv("ANGY_LLM_PROVIDER") or ("openai" if os.getenv("OPENAI_API_KEY") else "ollama")).lower()
+    model = os.getenv("ANGY_LLM_MODEL") or ("gpt-4o-mini" if provider == "openai" else "phi3")
     client = LangchainIntakeClient(
-    system_prompt="You are a helpful assistant.",
-    model="gpt-4o-mini",
-    provider="openai",
-    openai_api_key="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",
-)
+        system_prompt="You are a helpful assistant.",
+        model=model,
+        provider=provider,
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+    )
 
     basic_info = ask_basic_info(client)
 
@@ -321,6 +325,13 @@ def intake_flow():
         for q in CHEST_PAIN_QUESTIONS["questions"]
     }
 
+    for question, answer in chest_pain_answers.items():
+        fhir_resource = call_lang2fhir_create(question + ": " + answer) # TODO: add question to the answer
+        print(fhir_resource)
+        medplum_url = save_to_medplum(fhir_resource)
+        if medplum_url:
+            medplum_links.append(medplum_url)
+
     cv_risk_answers = {
         q["key"]: next(
             (
@@ -332,6 +343,13 @@ def intake_flow():
         )
         for q in CV_RISK_QUESTIONS["questions"]
     }
+
+    for question, answer in cv_risk_answers.items():
+        fhir_resource = call_lang2fhir_create(question + ": " + answer) # TODO: add question to the answer
+        print(fhir_resource)
+        medplum_url = save_to_medplum(fhir_resource)
+        if medplum_url:
+            medplum_links.append(medplum_url)
 
     print("\n== Intake Complete ==")
     print("Angy: Thank you. I’ve noted everything and will pass it on to your clinical team.")
