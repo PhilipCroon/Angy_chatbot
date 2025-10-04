@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from langchain_community.chat_models import ChatOllama
+# from langchain_community.chat_models import ChatOllama
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain.memory import ConversationBufferMemory
@@ -29,25 +30,32 @@ class LangchainIntakeClient:
         model: str = "phi3",
         temperature: float = 0.2,
         embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
-        provider: str = "ollama",   # <-- new
+        provider: Optional[str] = None,
         openai_api_key: Optional[str] = None,
     ) -> None:
         self._system_prompt = system_prompt
-        self._memory = ConversationBufferMemory(return_messages=True)
+        provider = (provider or os.getenv("ANGY_LLM_PROVIDER") or "ollama").lower()
         self._embeddings: List[Dict[str, object]] = []
-        self._embedder = None
 
-        # Select LLM backend
-        if provider == "ollama":
-            self._llm = ChatOllama(model=model, temperature=temperature)
-        elif provider == "openai":
-            self._llm = ChatOpenAI(
-                model=model,
-                temperature=temperature,
-                api_key=openai_api_key,
-            )
+        if provider == "openai":
+            api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+            if ChatOpenAI is None:
+                raise ImportError("langchain_openai package is required for OpenAI provider")
+            if not api_key:
+                raise ValueError("OpenAI provider selected but no API key provided")
+            self._llm = ChatOpenAI(model=model, temperature=temperature, api_key=api_key)
         else:
-            raise ValueError(f"Unsupported provider: {provider}")
+            self._llm = ChatOllama(model=model, temperature=temperature)
+
+        self._memory = ConversationBufferMemory(return_messages=True)
+
+        if HuggingFaceEmbeddings is not None:
+            try:
+                self._embedder = HuggingFaceEmbeddings(model_name=embedding_model)
+            except Exception:  # pragma: no cover
+                self._embedder = None
+        else:
+            self._embedder = None
 
 
     # ------------------------------------------------------------------
