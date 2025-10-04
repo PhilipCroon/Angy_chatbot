@@ -115,6 +115,19 @@ POSITIVE_CONFIRMATIONS = {
 }
 
 
+def _natural_confirmation(client: LangchainIntakeClient, question: str, answer: str) -> str:
+    instruction = (
+        "You are Angy, a warm medical intake assistant."
+        " Craft a single concise sentence that repeats the inferred patient answer in natural language"
+        " and politely asks for confirmation."
+        " Avoid phrases like 'It sounds like' and keep it to one sentence.\n"
+        f"Question context: {question}\n"
+        f"Inferred answer: {answer}"
+    )
+    response = client.ask(instruction, history=[], stream=False).strip()
+    return response or f"I understood {answer}. Is that correct?"
+
+
 def _infer_answer(
     client: LangchainIntakeClient,
     prompt: str,
@@ -185,16 +198,16 @@ def is_confirmation(client: LangchainIntakeClient, reply: str) -> bool:
 
 def summarize_and_check_for_additions(client: LangchainIntakeClient) -> None:
     """Summarize the conversation so far and ask the patient if they want to add anything."""
-    print("Angy: Let me summarize this real quick. You have been...\n")
+    print("Angy: To ensure I understand you correctly, here’s a brief summary of what you’ve told me so far...\n")
     context_text = "\n".join(
         f"- {msg.content}" for msg in client.patient_messages()
         if hasattr(msg, "content") and msg.content
     )
 
     instruction = (
-        "You are a medical intake assistant. Start by saying 'Let me summarize this real quick. You have been...'. "
-        "Then briefly summarize the key points of the conversation in 1–3 sentences. "
-        "End with 'Would you like to add anything?'\n\n"
+        "You are a medical intake assistant. Start by saying 'To ensure I understand you correctly, here’s a brief summary of what you’ve told me so far...'. "
+        "Then briefly summarize the key points of the conversation in 1–3 sentences in a professional but conversational style. "
+        "End with 'Is there anything you’d like to add?'\n\n"
         f"Conversation:\n{context_text}"
     )
 
@@ -206,7 +219,7 @@ def summarize_and_check_for_additions(client: LangchainIntakeClient) -> None:
 
 def introduce_next_section(section_label: str) -> None:
     """Introduce the next section of the intake."""
-    print(f"Angy: Thank you. I’ll now ask a few questions about {section_label}.\n")
+    print(f"Angy: Thank you for sharing that. Now I’d like to ask some questions about {section_label}.\n")
 
 
 def handle_chest_pain(client: LangchainIntakeClient):
@@ -220,7 +233,7 @@ def handle_chest_pain(client: LangchainIntakeClient):
 
         inferred = _infer_answer(client, q["prompt"], expected_type=q.get("answer_type"), stream=True)
         if inferred:
-            confirmation = f"It sounds like {inferred}. Is that correct?"
+            confirmation = _natural_confirmation(client, q["prompt"], inferred)
             print(f"Angy: {confirmation}")
             client.add_assistant_message(confirmation)
             patient_reply = input("You: ").strip()
@@ -256,7 +269,7 @@ def handle_cv_risk(client: LangchainIntakeClient):
 
         inferred = _infer_answer(client, q["prompt"], expected_type=q.get("answer_type"), stream=True)
         if inferred:
-            confirmation = f"It sounds like {inferred}. Is that correct?"
+            confirmation = _natural_confirmation(client, q["prompt"], inferred)
             print(f"Angy: {confirmation}")
             client.add_assistant_message(confirmation)
             patient_reply = input("You: ").strip()
