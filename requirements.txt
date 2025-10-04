@@ -1,0 +1,7 @@
+pypdf
+regex
+rank-bm25
+faiss-cpu
+sentence-transformers
+openai
+tiktoken
